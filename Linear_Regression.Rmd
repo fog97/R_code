@@ -1,0 +1,261 @@
+---
+title: "Car Price"
+output:
+  word_document: default
+  html_document: default
+---
+  
+## Introduction  
+I'll use a simple linear regression to predict car pricing starting from some cars' specs.  
+
+# Data Import and Exploration  
+The first step is importing data, check their integrity and start exploring them.
+```{r setup, include=FALSE}
+library(tidyverse)
+set.seed(10080)
+data<-read.csv("/CarPrice_Assignment.csv",sep="," , dec = ".",   stringsAsFactors=TRUE, na.strings=c("NA","NaN", ""))
+data <- data%>% modify_if(is.character, as.factor) 
+```
+The dataset has 205 Rows and 26 columns.  
+I'm now proceeding with further descriptive analysis, using **Psych** package.
+```{r Descriptions}
+psych::describe(data)
+```
+```{r Head&Tail}
+head(data)
+tail(data)
+```
+
+
+
+
+
+
+
+I'll focus on the variable *Price*, it is the Target variable.
+```{r Target}
+psych::describe(data$price)
+hist(data$price)
+```
+Is Clear that the Target variable's distribution is not normal, and I'll deal with this.
+# NA Count  
+I'm going to count missing data.
+```{r Missing Tab}
+library(funModeling)
+library(dplyr)
+status=df_status(data, print_results = F)
+status%>%arrange(-q_na)
+```
+I'm lucky and I have no missingness. I'll plot missingness too.
+```{r Missing Plot}
+library(VIM)
+na_pattern = aggr(data, numbers=TRUE, sortVars=TRUE, labels=names(data), cex.axis=.5,                    gap=3, ylab=c("Proportion of missingness","Missingness Pattern"))
+```
+I can see from the plot that there are no missing data in the Data.  
+Using real world data is a lot common to find Missing Data. In this case is very useful to use packages like **mice** in order to impute them.
+
+# Data Preprocessing  
+
+I'll start with a model and then analyse its diagnostic in order to understand the problems.
+```{r First Model}
+model1<-lm(price~.,data = data)
+summary(model1)
+```
+
+I'll use some graphics to better understanding.
+```{r Model1 Graphoics}
+par(mfrow=c(2,2))
+plot(model1)
+par(mfrow=c(1,1))
+
+```
+I have a massive amount of problems, starting with collinearity and a great amount of influential points.  
+The first step is controlling correlation among explanatory variables and delete it where is present.  
+I'll use a package called **graybox**.  
+Using the function **association**, I'll display association measures between varibles, no matter if they're mixed between factors and numeric.  
+In the table below it's reported the strength of the connection between each variable, the relative p-value and the king of connection measure used infact the function looks at the types of the variables and calculates different measures depending on the
+result:
+• If both variables are numeric, then Pearson’s correlation is calculated;
+• If both variables are categorical, then Cramer’s V is calculated;
+• Finally, if one of the variables is categorical, and the other is numeric, then multiple correlation
+is returned.  
+The three table are huge because of the number of variables. 
+
+```{r, Correlation}
+library(greybox)
+assocValues <- association(data) 
+print(assocValues,digits=2)
+```
+I can see that there are correlation problems, so I'll delete some variables:  
+ - CarName;  
+ - car_ID;  
+ - aspiration;  
+ - fuelsystem;  
+ - citympg;  
+ - compressionratio;  
+ - doornumber;  
+ - curbweight;  
+ - wheelbase;  
+ - enginesize;  
+ - carwidth.
+
+```{r include=FALSE}
+data$CarName<-NULL
+data$car_ID<-NULL
+data$fuelsystem<-NULL
+data$doornumber<-NULL
+data$curbweight<-NULL
+data$carwidth<-NULL
+data$cylindernumber<-NULL
+```
+Now, I'm ready to set up a second linear model.
+```{r Model2}
+model2<-lm(price~.,data = data)
+summary(model2)
+```
+```{r Model2 Graphoics}
+par(mfrow=c(2,2))
+plot(model2)
+par(mfrow=c(1,1))
+```
+Diagnostic are still bad, but improving.
+Is easy to see that the Q-Q plot shows an almost normal model, the main problem here is the great number of influent points and the distribution of Residuals.  
+
+
+# Target and Variables Transformation  
+
+Now I'll search the best transformation for the target variables.
+```{r Transformation}
+library(MASS)
+boxcoxreg1<-boxcox(model1)
+```
+```{r Transformation2}
+lambda=boxcoxreg1$x[which.max(boxcoxreg1$y)]
+lambda=round(lambda,3)
+```
+
+Box-Cox algorithm adresses `r lambda` as the Max of log-Likelihood function,it's almost 0 so I'll use log transformation for the target variable.
+```{r NewTarget}
+data$price_log<-log(data$price)
+psych::describe(data$price_log)
+hist(data$price_log)
+```
+Now it's Target distribution is almost Normal, and it's good to use.  
+I'll pass now to search the best transformation for explanatory variables using GAM.  
+General additive models use splines in order to add non linear effects to the model, in this way I'll know how to transform variables to use them in a linear model.
+```{r Variable transformation}
+formula<-paste(colnames(data),collapse = "+")
+
+library(mgcv)
+modelgam<-mgcv::gam(price_log~symboling+fueltype+aspiration+carbody+drivewheel+enginelocation+s(wheelbase)+s(carlength)+s(carheight)+enginetype+s(enginesize)+s(boreratio)+s(stroke)+s((compressionratio)+s(horsepower)+s(peakrpm)+s(citympg)+s(highwaympg)),data=data)
+
+summary(modelgam)
+
+```
+```{r Modelgam Plots}
+par(mfrow=c(2,2))
+plot(modelgam)
+par(mfrow=c(1,1))
+```
+Now I'll use ANOVA to find out if the second model is better.
+```{r ANOVA}
+anova(model2, modelgam, test="Chisq")
+```
+
+Model created with GAM is better, I'll drow called partial-residual plots.
+```{r Partial Plots}
+library(car)
+crPlots(model2)
+par(mfrow=c(1,1)) 
+```
+I didn't find a good transformation to add a nonlinear term in my linear model, I'll go with the second model.  
+# Outliers and Cooksd  
+Now I manage the problem of outliers and influential points, by calculating Cook's distances.  
+I'll calculate a Cutoff as:  
+$\frac{4}{(length(residuals)-length(coefficients)-2)}$
+```{r Cooks Distances}
+cooksd <- cooks.distance(model2)
+cutoff <- 4/(length(model2$residuals)-length(model2$coefficients)-2)
+plot(model2, which=4, cook.levels=cutoff)
+abline(h=cutoff, col="red")
+# drop influencial obs
+NOinfluential <- as.numeric(names(cooksd)[(cooksd < cutoff)])  # influential row numbers
+# select noinfluential obs
+NOinflu=data.frame(data[cooksd < cutoff, ])  # influential row numbers
+```
+Now I'll fit a model on data without influential points.
+```{r NoInFluential}
+#Unusually a Row completely Missing is created, is just a code problem I delete it.
+NOinflu<-NOinflu[is.na(NOinflu$price_log)!=TRUE,]
+
+
+
+model3 = lm(price_log~.,data=NOinflu)
+summary(model3)
+```
+I'll plot again diagnostics.
+```{r model3 plot}
+par(mfrow=c(2,2)) 
+plot(model3)
+par(mfrow=c(1,1)) 
+```
+The model's preformace is greatly increased, the RSE is greatly decreasd to 0.1366 and the Adjusted R-square is 0.9128, it is a good model now.
+
+# Feature Selection  
+I'll performe feature selection to see if I can improve the model and reduce the number of variables.
+```{r Selection}
+selectedMod <- step(model3, direction="both")
+```
+The model selected is:  
+price ~ carbody + drivewheel + wheelbase + carlength + 
+    enginetype + enginesize + boreratio + stroke + compressionratio + 
+    horsepower + peakrpm + citympg, data = NOinflu,  
+let's see if it works better.
+```{r Model4}
+model4<-lm(price_log ~ carbody + drivewheel + wheelbase + carlength + 
+    enginetype + enginesize + boreratio + stroke + compressionratio + 
+    horsepower + peakrpm + citympg, NOinflu)
+summary(model4)
+```
+I can't see much improvement, but I'll keep the last model as better because it has the smallest variables' number.
+
+```{r}
+par(mfrow=c(2,2)) 
+plot(model4)
+par(mfrow=c(1,1))
+```
+# Heteroskedasticity
+In the end I'll check heteroskedasticity.
+```{r Hetero Test}
+library(lmtest)
+bptest(model4)
+```
+According to studentized Breusch-Pagan test, I have no reason to refuse h0 homoskedasticity.  
+In a different case I should use both white s.e., because with heteroskedasticity standard errors are not correct and any iference in wrong.  
+Parameters are correct, least squarese are correct but no more efficient it's better to use other methods such as Robust Regression or Bootstrap.
+
+# Model Evaluation
+
+As last step I'll bring the target variable in its original scale and I'll see if it is good.
+```{r Rescale}
+Predicted_log_price=model4$fitted.values
+Predicted_price=exp(Predicted_log_price)
+plot(Predicted_price, Predicted_log_price, xlab ="price predicted" , ylab="log price predicted")
+```
+I'll plot predicted VS observed values and log predicted vs log observed values.
+
+```{r Predicted Log VS Observed Log}
+plot(Predicted_log_price,NOinflu$price_log, xlab="Predicted Log Price", ylab="Observed Log Price")
+
+```
+
+```{r Predicted VS Observed}
+plot(Predicted_price,NOinflu$price, xlab="Predicted Price", ylab="Observed Price")
+
+```
+In this plots it's easy to see that points has a shape that make thing to a good correspondence between Preicted and Observed values.  
+In the second plot this shape is not as evident as in the first, because of the not normal distribution of the variable.
+
+
+This is how a regression model is built, I was lucky with heteroskedasticity and Missing data, but is not difficult to fix that problems.
+
