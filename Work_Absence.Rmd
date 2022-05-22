@@ -1,0 +1,169 @@
+---
+title: "Absence Classification"
+author: "Luca"
+date: "24/4/2022"
+output: html_document
+---
+
+# Work Absence  
+
+I'm going to use this data to classify the cause of abscence from work.  
+In the Dataset there are 21 variables, in particoular :    
+01. Individual identification (ID)  
+02. Reason for absence (ICD)  
+03. Month of absence  
+04. Day of the week (Monday (2), Tuesday (3), Wednesday (4), Thursday (5), Friday (6))  
+05. Seasons  
+06. Transportation expense  
+07. Distance from Residence to Work (kilometers)  
+08. Service time  
+09. Age  
+10. Work load Average/day   
+11. Hit target  
+12. Disciplinary failure (yes=1; no=0)  
+13. Education (high school (1), graduate (2), postgraduate (3), master and doctor (4))  
+14. Son (number of children)  
+15. Social drinker (yes=1; no=0)  
+16. Social smoker (yes=1; no=0)  
+17. Pet (number of pet)  
+18. Weight  
+19. Height  
+20. Body mass index  
+21. Absenteeism time in hours (target)  
+
+
+### Data Import  
+
+```{r Data Import, results="hide"}
+data<-read.csv(list.files()[1],header = T,sep=";")
+data$id<-NULL
+```
+
+In order to start data description I'm going to use dichotomic variables as Factors.
+```{r dichotomic to Factor, results="hide"}
+require(funModeling)
+require(dplyr)
+status<-df_status(data=data)%>%arrange(-unique)%>%filter(unique<=5 & type!="factor")
+
+
+data[status$variable] <- lapply(data[status$variable], factor)
+
+```
+
+### Data Description
+I'll start with a table describing the data I have, the first thing I can notice is that some categories represent a small number of record in the dataset, I think I'll drop them and focus on highly represented categories.
+
+```{r Tableone,}
+require(tidyverse)
+#install.packages("tableone")
+library(tableone)
+
+factor<-as.factor(as.character(data$Reason.for.absence))
+data$Reason.for.absence<-factor
+
+tab<-CreateTableOne(vars =c("ID","Reason.for.absence","Month.of.absence","Day.of.the.week","Seasons","Transportation.expense","Distance.from.Residence.to.Work","Service.time","Age","Work.load.Average.day","Hit.target","Disciplinary.failure","Education","Son","Social.drinker","Social.smoker","Pet","Weight","Height","Body.mass.index","Absenteeism.time.in.hours"), factorVars=c("Social.drinker","Social.smoker","Pet","Month.of.absence"), data = data)
+kableone(tab)
+```
+
+### Correlation Analysis  
+I'll search correlation in the data, using the *Greybox* package, I'll the correlation matrix and then delete all correlated data.  
+I do not really need to check for correlation because I'm using a Decision Tree, but I'm doing this in case I want to test my model performance against an other algorithm.
+
+```{r Correlation}
+
+require("greybox")
+
+data$ID<-NULL
+assoc<-greybox::association(data)
+knitr::kable(assoc$value)
+collinearity<-as.data.frame(assoc$value)
+columns<-as.data.frame(which(as.matrix(assoc$value) >0.8, arr.ind = T))%>%filter(row!=col)
+collinearity<-collinearity[columns$col,columns$row]
+
+
+data$Weight<-NULL
+data$Seasons<-NULL
+
+
+```
+According to the matrix I need to delete just 2 variables *Weight* and *season* due to their high correlation with *Body.mass.index* and *Month.of.absence*. 
+  
+### Train-Test Split  
+
+Separating data in train and test, with 70%-30% proportion.  
+I'm dropping some levels from the target variable, in particoular I'm using only categories with at least 40 record in the dataset.
+I'm not expecting much from the model on low represented data.
+I'm keeping 6 levels (code,description [absolute frequency]) :
+  0  Certain infectious and parasitic diseases [43];  
+  13 Diseases of the musculoskeletal system and connective tissue [55];  
+  19 Injury, poisoning and certain other consequences of external causes [40];  
+  23 Medical consultation [69];
+  27 Physiotherapy [149];
+  28 Dental consultation [112].
+```{r TrainTest, results="hide"}
+require(caret)
+set.seed(817561)
+
+df_status(data)%>%select(variable,type)
+indx <- sapply(data, is.factor)
+data[indx] <- lapply(data[indx], function(x) as.numeric(as.character(x)))
+df_status(data)%>%select(variable,type)
+
+
+factor<-as.factor(as.character(data$Reason.for.absence))
+data$Reason.for.absence<-factor
+
+
+tokeep<-as.data.frame(table(data$Reason.for.absence))%>%arrange(-Freq)%>%filter(Freq>=40)
+
+
+
+data<-data[data$Reason.for.absence%in%tokeep$Var1,]
+
+levels(data$Reason.for.absence)<-make.names(levels(data$Reason.for.absence));levels(data$Reason.for.absence)
+
+data$Reason.for.absence<-droplevels(data$Reason.for.absence)
+
+table(data$Reason.for.absence)
+
+trainindex<-createDataPartition(data$Reason.for.absence,p=.70,list=FALSE)
+train<-data[trainindex,]
+test<-data[-trainindex,]
+
+train.y<-train$Reason.for.absence
+train$Reason.for.absence<-NULL
+
+```
+
+
+### Model Training  
+
+I'm going to train a C5.0 Decisione Tree. The C5.0 algorithm  does well fo rmost types of problems directly out of the box. Compared to more advanced and sophisticated machine learning mnodels (e.g. Neural Networks and Support Vector Machines), the decision trees under the C5.0 algorithm generally perform nearly as well but are much easier to understan and deploy.
+```{r, Model, results="hide"}
+model1<-caret::train(train,train.y,method="C5.0Tree", verbose=T,trControl = trainControl(method = "repeatedcv", repeats = 5, 
+classProbs =  TRUE))
+
+
+print(model1)
+```
+
+
+
+### Predictions  
+
+I'm calculating predictions using my model and then I'll show the confusion matrix.
+
+```{r Performace}
+test.y<-test$Reason.for.absence
+test$Reason.for.absence<-NULL
+pred <- model1 %>% predict(test) 
+
+table(test.y)
+caret::confusionMatrix(pred,test.y)
+
+
+```
+
+From the statistics I can see that I have mixed performace, some good performace on 0 and 27 Class, not bad perdormaces on 23, and bad performance on 12,19 and 28.
+
+In conclusion I can't really predict from this data why a worker is absent, but for sure is possible to improve data and algorithm in order to obtain a reliable tool to understand why a worker have been absent even if it's not possible to have a medical certificate.
